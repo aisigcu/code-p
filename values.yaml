@@ -1,0 +1,16 @@
+retentionBootstrap:
+  enabled: true
+
+  harborUrl: "https://harbor.example.com"
+
+  existingSecret: "harbor-admin"
+  usernameKey: "username"
+  passwordKey: "password"
+
+  projects:
+    - name: "library"
+      scheduleCron: "0 0 0 * * *"
+      repoPattern: "**"
+      tagPattern: "**"
+      keepLatestPushed: 5
+      keepPulledWithinDays: 90

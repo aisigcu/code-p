@@ -1,0 +1,163 @@
+{{- if .Values.retentionBootstrap.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "harbor.fullname" . }}-retention-bootstrap
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "20"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: retention-bootstrap
+          image: docker.io/curlimages/curl:8.8.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HARBOR_URL
+              value: {{ .Values.retentionBootstrap.harborUrl | quote }}
+            - name: HARBOR_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.retentionBootstrap.existingSecret | quote }}
+                  key: {{ .Values.retentionBootstrap.usernameKey | quote }}
+            - name: HARBOR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.retentionBootstrap.existingSecret | quote }}
+                  key: {{ .Values.retentionBootstrap.passwordKey | quote }}
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              apk add --no-cache jq >/dev/null
+
+              wait_for_harbor() {
+                echo "Waiting for Harbor..."
+                for i in $(seq 1 60); do
+                  if curl -skf "$HARBOR_URL/api/v2.0/health" >/dev/null; then
+                    echo "Harbor is ready"
+                    return 0
+                  fi
+                  sleep 10
+                done
+                echo "Harbor did not become ready"
+                exit 1
+              }
+
+              apply_policy() {
+                PROJECT_NAME="$1"
+                KEEP="$2"
+                DAYS="$3"
+                CRON="$4"
+                REPO_PATTERN="$5"
+                TAG_PATTERN="$6"
+
+                echo "Configuring retention for project: $PROJECT_NAME"
+
+                PROJECT_JSON="$(curl -skf -u "$HARBOR_USER:$HARBOR_PASSWORD" \
+                  "$HARBOR_URL/api/v2.0/projects/$PROJECT_NAME")"
+
+                PROJECT_ID="$(echo "$PROJECT_JSON" | jq -r '.project_id')"
+                RETENTION_ID="$(echo "$PROJECT_JSON" | jq -r '.metadata.retention_id // empty')"
+
+                POLICY_JSON="$(jq -n \
+                  --argjson projectId "$PROJECT_ID" \
+                  --argjson keep "$KEEP" \
+                  --argjson days "$DAYS" \
+                  --arg cron "$CRON" \
+                  --arg repoPattern "$REPO_PATTERN" \
+                  --arg tagPattern "$TAG_PATTERN" \
+                  '{
+                    algorithm: "or",
+                    scope: {
+                      level: "project",
+                      ref: $projectId
+                    },
+                    trigger: {
+                      kind: "Schedule",
+                      settings: {
+                        cron: $cron
+                      }
+                    },
+                    rules: [
+                      {
+                        template: "latestPushedK",
+                        params: {
+                          latestPushedK: $keep
+                        },
+                        tag_selectors: [
+                          {
+                            kind: "doublestar",
+                            decoration: "matches",
+                            pattern: $tagPattern
+                          }
+                        ],
+                        scope_selectors: {
+                          repository: [
+                            {
+                              kind: "doublestar",
+                              decoration: "repoMatches",
+                              pattern: $repoPattern
+                            }
+                          ]
+                        }
+                      },
+                      {
+                        template: "nDaysSinceLastPull",
+                        params: {
+                          nDaysSinceLastPull: $days
+                        },
+                        tag_selectors: [
+                          {
+                            kind: "doublestar",
+                            decoration: "matches",
+                            pattern: $tagPattern
+                          }
+                        ],
+                        scope_selectors: {
+                          repository: [
+                            {
+                              kind: "doublestar",
+                              decoration: "repoMatches",
+                              pattern: $repoPattern
+                            }
+                          ]
+                        }
+                      }
+                    ]
+                  }')"
+
+                if [ -n "$RETENTION_ID" ] && [ "$RETENTION_ID" != "null" ]; then
+                  echo "Updating retention policy $RETENTION_ID for project $PROJECT_NAME"
+                  curl -skf -u "$HARBOR_USER:$HARBOR_PASSWORD" \
+                    -H "Content-Type: application/json" \
+                    -X PUT \
+                    "$HARBOR_URL/api/v2.0/retentions/$RETENTION_ID" \
+                    -d "$POLICY_JSON"
+                else
+                  echo "Creating retention policy for project $PROJECT_NAME"
+                  curl -skf -u "$HARBOR_USER:$HARBOR_PASSWORD" \
+                    -H "Content-Type: application/json" \
+                    -X POST \
+                    "$HARBOR_URL/api/v2.0/retentions" \
+                    -d "$POLICY_JSON"
+                fi
+              }
+
+              wait_for_harbor
+
+              {{- range .Values.retentionBootstrap.projects }}
+              apply_policy \
+                {{ .name | quote }} \
+                {{ .keepLatestPushed | quote }} \
+                {{ .keepPulledWithinDays | quote }} \
+                {{ .scheduleCron | quote }} \
+                {{ .repoPattern | default "**" | quote }} \
+                {{ .tagPattern | default "**" | quote }}
+              {{- end }}
+{{- end }}
