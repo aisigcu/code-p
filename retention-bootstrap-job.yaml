@@ -50,7 +50,7 @@ spec:
               }
 
               get_json_number() {
-                echo "$1" | sed -n "s/.*\"$2\":[ ]*\([0-9][0-9]*\).*/\1/p"
+                echo "$1" | tr -d '\n\r' | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p"
               }
 
               apply_policy() {
@@ -64,7 +64,8 @@ spec:
 
                 PROJECT_JSON="$(curl -skf -u "$HARBOR_USER:$HARBOR_PASSWORD" \
                   "$HARBOR_URL/api/v2.0/projects/$PROJECT_NAME")"
-
+                echo "Project API response:"
+                echo "$PROJECT_JSON"
                 PROJECT_ID="$(get_json_number "$PROJECT_JSON" "project_id")"
                 RETENTION_ID="$(get_json_number "$PROJECT_JSON" "retention_id")"
 
