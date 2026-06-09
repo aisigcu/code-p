@@ -34,7 +34,7 @@ spec:
             - /bin/sh
             - -ec
             - |
-              apk add --no-cache jq >/dev/null
+              echo "Bootstrap container started"
 
               wait_for_harbor() {
                 echo "Waiting for Harbor..."
@@ -49,104 +49,86 @@ spec:
                 exit 1
               }
 
+              get_json_number() {
+                echo "$1" | sed -n "s/.*\"$2\":[ ]*\([0-9][0-9]*\).*/\1/p"
+              }
+
               apply_policy() {
                 PROJECT_NAME="$1"
                 KEEP="$2"
-                DAYS="$3"
-                CRON="$4"
-                REPO_PATTERN="$5"
-                TAG_PATTERN="$6"
+                CRON="$3"
+                REPO_PATTERN="$4"
+                TAG_PATTERN="$5"
 
                 echo "Configuring retention for project: $PROJECT_NAME"
 
                 PROJECT_JSON="$(curl -skf -u "$HARBOR_USER:$HARBOR_PASSWORD" \
                   "$HARBOR_URL/api/v2.0/projects/$PROJECT_NAME")"
 
-                PROJECT_ID="$(echo "$PROJECT_JSON" | jq -r '.project_id')"
-                RETENTION_ID="$(echo "$PROJECT_JSON" | jq -r '.metadata.retention_id // empty')"
+                PROJECT_ID="$(get_json_number "$PROJECT_JSON" "project_id")"
+                RETENTION_ID="$(get_json_number "$PROJECT_JSON" "retention_id")"
 
-                POLICY_JSON="$(jq -n \
-                  --argjson projectId "$PROJECT_ID" \
-                  --argjson keep "$KEEP" \
-                  --argjson days "$DAYS" \
-                  --arg cron "$CRON" \
-                  --arg repoPattern "$REPO_PATTERN" \
-                  --arg tagPattern "$TAG_PATTERN" \
-                  '{
-                    algorithm: "or",
-                    scope: {
-                      level: "project",
-                      ref: $projectId
-                    },
-                    trigger: {
-                      kind: "Schedule",
-                      settings: {
-                        cron: $cron
-                      }
-                    },
-                    rules: [
-                      {
-                        template: "latestPushedK",
-                        params: {
-                          latestPushedK: $keep
-                        },
-                        tag_selectors: [
-                          {
-                            kind: "doublestar",
-                            decoration: "matches",
-                            pattern: $tagPattern
-                          }
-                        ],
-                        scope_selectors: {
-                          repository: [
-                            {
-                              kind: "doublestar",
-                              decoration: "repoMatches",
-                              pattern: $repoPattern
-                            }
-                          ]
-                        }
+                if [ -z "$PROJECT_ID" ]; then
+                  echo "ERROR: Could not detect project_id for project $PROJECT_NAME"
+                  echo "$PROJECT_JSON"
+                  exit 1
+                fi
+
+                POLICY_JSON='{
+                  "algorithm": "or",
+                  "scope": {
+                    "level": "project",
+                    "ref": '"$PROJECT_ID"'
+                  },
+                  "trigger": {
+                    "kind": "Schedule",
+                    "settings": {
+                      "cron": "'"$CRON"'"
+                    }
+                  },
+                  "rules": [
+                    {
+                      "template": "latestPushedK",
+                      "params": {
+                        "latestPushedK": '"$KEEP"'
                       },
-                      {
-                        template: "nDaysSinceLastPull",
-                        params: {
-                          nDaysSinceLastPull: $days
-                        },
-                        tag_selectors: [
-                          {
-                            kind: "doublestar",
-                            decoration: "matches",
-                            pattern: $tagPattern
-                          }
-                        ],
-                        scope_selectors: {
-                          repository: [
-                            {
-                              kind: "doublestar",
-                              decoration: "repoMatches",
-                              pattern: $repoPattern
-                            }
-                          ]
+                      "tag_selectors": [
+                        {
+                          "kind": "doublestar",
+                          "decoration": "matches",
+                          "pattern": "'"$TAG_PATTERN"'"
                         }
+                      ],
+                      "scope_selectors": {
+                        "repository": [
+                          {
+                            "kind": "doublestar",
+                            "decoration": "repoMatches",
+                            "pattern": "'"$REPO_PATTERN"'"
+                          }
+                        ]
                       }
-                    ]
-                  }')"
+                    }
+                  ]
+                }'
 
-                if [ -n "$RETENTION_ID" ] && [ "$RETENTION_ID" != "null" ]; then
-                  echo "Updating retention policy $RETENTION_ID for project $PROJECT_NAME"
+                if [ -n "$RETENTION_ID" ]; then
+                  echo "Updating existing retention policy $RETENTION_ID"
                   curl -skf -u "$HARBOR_USER:$HARBOR_PASSWORD" \
                     -H "Content-Type: application/json" \
                     -X PUT \
                     "$HARBOR_URL/api/v2.0/retentions/$RETENTION_ID" \
                     -d "$POLICY_JSON"
                 else
-                  echo "Creating retention policy for project $PROJECT_NAME"
+                  echo "Creating new retention policy"
                   curl -skf -u "$HARBOR_USER:$HARBOR_PASSWORD" \
                     -H "Content-Type: application/json" \
                     -X POST \
                     "$HARBOR_URL/api/v2.0/retentions" \
                     -d "$POLICY_JSON"
                 fi
+
+                echo "Retention configured for $PROJECT_NAME"
               }
 
               wait_for_harbor
@@ -155,7 +137,6 @@ spec:
               apply_policy \
                 {{ .name | quote }} \
                 {{ .keepLatestPushed | quote }} \
-                {{ .keepPulledWithinDays | quote }} \
                 {{ .scheduleCron | quote }} \
                 {{ .repoPattern | default "**" | quote }} \
                 {{ .tagPattern | default "**" | quote }}
