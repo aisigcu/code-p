@@ -5,141 +5,74 @@ metadata:
   name: {{ include "harbor.fullname" . }}-retention-bootstrap
   namespace: {{ .Release.Namespace }}
   annotations:
-    "helm.sh/hook": post-install,post-upgrade
-    "helm.sh/hook-weight": "20"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
 spec:
-  backoffLimit: 5
+  backoffLimit: 1
   template:
     spec:
-      restartPolicy: OnFailure
+      restartPolicy: Never
+
       containers:
-        - name: retention-bootstrap
-          image: docker.io/curlimages/curl:8.8.0
-          imagePullPolicy: IfNotPresent
-          env:
-            - name: HARBOR_URL
-              value: {{ .Values.retentionBootstrap.harborUrl | quote }}
-            - name: HARBOR_USER
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.retentionBootstrap.existingSecret | quote }}
-                  key: {{ .Values.retentionBootstrap.usernameKey | quote }}
-            - name: HARBOR_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.retentionBootstrap.existingSecret | quote }}
-                  key: {{ .Values.retentionBootstrap.passwordKey | quote }}
-          command:
-            - /bin/sh
-            - -ec
-            - |
-              echo "Bootstrap container started"
+      - name: retention-bootstrap
 
-              wait_for_harbor() {
-                echo "Waiting for Harbor..."
-                for i in $(seq 1 60); do
-                  if curl -skf "$HARBOR_URL/api/v2.0/health" >/dev/null; then
-                    echo "Harbor is ready"
-                    return 0
-                  fi
-                  sleep 10
-                done
-                echo "Harbor did not become ready"
-                exit 1
-              }
+        image: docker.io/curlimages/curl:8.8.0
+        imagePullPolicy: IfNotPresent
 
-              get_json_number() {
-                echo "$1" | tr -d '\n\r' | sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p"
-              }
+        env:
+        - name: HARBOR_URL
+          value: {{ .Values.retentionBootstrap.harborUrl | quote }}
 
-              apply_policy() {
-                PROJECT_NAME="$1"
-                KEEP="$2"
-                CRON="$3"
-                REPO_PATTERN="$4"
-                TAG_PATTERN="$5"
+        - name: HARBOR_USER
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.retentionBootstrap.existingSecret | quote }}
+              key: username
 
-                echo "Configuring retention for project: $PROJECT_NAME"
+        - name: HARBOR_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.retentionBootstrap.existingSecret | quote }}
+              key: password
 
-                PROJECT_JSON="$(curl -skf -u "$HARBOR_USER:$HARBOR_PASSWORD" \
-                  "$HARBOR_URL/api/v2.0/projects/$PROJECT_NAME")"
-                echo "Project API response:"
-                echo "$PROJECT_JSON"
-                PROJECT_ID="$(get_json_number "$PROJECT_JSON" "project_id")"
-                RETENTION_ID="$(get_json_number "$PROJECT_JSON" "retention_id")"
+        command:
+        - /bin/sh
+        - -ec
+        - |
+          echo "Bootstrap container started"
 
-                if [ -z "$PROJECT_ID" ]; then
-                  echo "ERROR: Could not detect project_id for project $PROJECT_NAME"
-                  echo "$PROJECT_JSON"
-                  exit 1
-                fi
+          echo "HARBOR_URL=$HARBOR_URL"
 
-                POLICY_JSON='{
-                  "algorithm": "or",
-                  "scope": {
-                    "level": "project",
-                    "ref": '"$PROJECT_ID"'
-                  },
-                  "trigger": {
-                    "kind": "Schedule",
-                    "settings": {
-                      "cron": "'"$CRON"'"
-                    }
-                  },
-                  "rules": [
-                    {
-                      "template": "latestPushedK",
-                      "params": {
-                        "latestPushedK": '"$KEEP"'
-                      },
-                      "tag_selectors": [
-                        {
-                          "kind": "doublestar",
-                          "decoration": "matches",
-                          "pattern": "'"$TAG_PATTERN"'"
-                        }
-                      ],
-                      "scope_selectors": {
-                        "repository": [
-                          {
-                            "kind": "doublestar",
-                            "decoration": "repoMatches",
-                            "pattern": "'"$REPO_PATTERN"'"
-                          }
-                        ]
-                      }
-                    }
-                  ]
-                }'
+          echo "Waiting for Harbor..."
 
-                if [ -n "$RETENTION_ID" ]; then
-                  echo "Updating existing retention policy $RETENTION_ID"
-                  curl -skf -u "$HARBOR_USER:$HARBOR_PASSWORD" \
-                    -H "Content-Type: application/json" \
-                    -X PUT \
-                    "$HARBOR_URL/api/v2.0/retentions/$RETENTION_ID" \
-                    -d "$POLICY_JSON"
-                else
-                  echo "Creating new retention policy"
-                  curl -skf -u "$HARBOR_USER:$HARBOR_PASSWORD" \
-                    -H "Content-Type: application/json" \
-                    -X POST \
-                    "$HARBOR_URL/api/v2.0/retentions" \
-                    -d "$POLICY_JSON"
-                fi
+          for i in $(seq 1 60); do
+            if curl -sk "$HARBOR_URL/api/v2.0/health" >/dev/null; then
+              echo "Harbor is ready"
+              break
+            fi
 
-                echo "Retention configured for $PROJECT_NAME"
-              }
+            sleep 5
+          done
 
-              wait_for_harbor
+          echo
+          echo "===== HEALTH ====="
+          curl -skv "$HARBOR_URL/api/v2.0/health" || true
 
-              {{- range .Values.retentionBootstrap.projects }}
-              apply_policy \
-                {{ .name | quote }} \
-                {{ .keepLatestPushed | quote }} \
-                {{ .scheduleCron | quote }} \
-                {{ .repoPattern | default "**" | quote }} \
-                {{ .tagPattern | default "**" | quote }}
-              {{- end }}
+          echo
+          echo
+          echo "===== PROJECTS ====="
+          curl -skv \
+            -u "$HARBOR_USER:$HARBOR_PASSWORD" \
+            "$HARBOR_URL/api/v2.0/projects?page=1&page_size=100" || true
+
+          echo
+          echo
+          echo "===== LIBRARY ====="
+          curl -skv \
+            -u "$HARBOR_USER:$HARBOR_PASSWORD" \
+            "$HARBOR_URL/api/v2.0/projects/library" || true
+
+          echo
+          echo
+          echo "Diagnostic completed"
 {{- end }}
