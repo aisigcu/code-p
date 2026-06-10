@@ -34,22 +34,16 @@ spec:
             - -ec
             - |
               echo "Bootstrap container started"
-              echo "HARBOR_URL=$HARBOR_URL"
 
-              echo "Waiting for Harbor..."
               until curl -skf "$HARBOR_URL/api/v2.0/health" >/dev/null; do
+                echo "Waiting for Harbor..."
                 sleep 5
               done
+
               echo "Harbor is ready"
 
               apply_policy() {
                 PROJECT_NAME="$1"
-                KEEP="$2"
-                CRON="$3"
-                REPO_PATTERN="$4"
-                TAG_PATTERN="$5"
-
-                echo "Configuring retention for project: $PROJECT_NAME"
 
                 PROJECT_JSON="$(curl -skf -u "$HARBOR_USER:$HARBOR_PASSWORD" \
                   "$HARBOR_URL/api/v2.0/projects/$PROJECT_NAME")"
@@ -57,12 +51,7 @@ spec:
                 PROJECT_ID="$(echo "$PROJECT_JSON" | tr -d '\n\r' | sed -n 's/.*"project_id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
                 RETENTION_ID="$(echo "$PROJECT_JSON" | tr -d '\n\r' | sed -n 's/.*"retention_id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
 
-                if [ -z "$PROJECT_ID" ]; then
-                  echo "ERROR: Could not detect project_id"
-                  echo "$PROJECT_JSON"
-                  exit 1
-                fi
-
+                echo "Project: $PROJECT_NAME"
                 echo "Project ID: $PROJECT_ID"
                 echo "Retention ID: ${RETENTION_ID:-none}"
 
@@ -75,20 +64,20 @@ spec:
                   "trigger": {
                     "kind": "Schedule",
                     "settings": {
-                      "cron": "'"$CRON"'"
+                      "cron": "0 0 0 * * *"
                     }
                   },
                   "rules": [
                     {
                       "template": "latestPushedK",
                       "params": {
-                        "latestPushedK": '"$KEEP"'
+                        "latestPushedK": 5
                       },
                       "tag_selectors": [
                         {
                           "kind": "doublestar",
                           "decoration": "matches",
-                          "pattern": "'"$TAG_PATTERN"'"
+                          "pattern": "**"
                         }
                       ],
                       "scope_selectors": {
@@ -96,7 +85,29 @@ spec:
                           {
                             "kind": "doublestar",
                             "decoration": "repoMatches",
-                            "pattern": "'"$REPO_PATTERN"'"
+                            "pattern": "**"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "template": "nDaysSinceLastPull",
+                      "params": {
+                        "nDaysSinceLastPull": 90
+                      },
+                      "tag_selectors": [
+                        {
+                          "kind": "doublestar",
+                          "decoration": "matches",
+                          "pattern": "**"
+                        }
+                      ],
+                      "scope_selectors": {
+                        "repository": [
+                          {
+                            "kind": "doublestar",
+                            "decoration": "repoMatches",
+                            "pattern": "**"
                           }
                         ]
                       }
@@ -124,11 +135,6 @@ spec:
               }
 
               {{- range .Values.retentionBootstrap.projects }}
-              apply_policy \
-                {{ .name | quote }} \
-                {{ .keepLatestPushed | quote }} \
-                {{ .scheduleCron | quote }} \
-                {{ .repoPattern | default "**" | quote }} \
-                {{ .tagPattern | default "**" | quote }}
+              apply_policy {{ .name | quote }}
               {{- end }}
 {{- end }}
