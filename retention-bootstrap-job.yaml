@@ -1,140 +1,148 @@
-{{- if .Values.retentionBootstrap.enabled }}
+{{- if or .Values.retention.enabled .Values.projectQuota.enabled }}
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ include "harbor.fullname" . }}-retention-bootstrap
-  namespace: {{ .Release.Namespace }}
+  name: harbor-project-config
   annotations:
-    argocd.argoproj.io/hook: PostSync
-    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation
 spec:
-  backoffLimit: 1
   template:
     spec:
       restartPolicy: Never
       containers:
-        - name: retention-bootstrap
-          image: docker.io/curlimages/curl:8.8.0
-          imagePullPolicy: IfNotPresent
-          env:
-            - name: HARBOR_URL
-              value: {{ .Values.retentionBootstrap.harborUrl | quote }}
-            - name: HARBOR_USER
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.retentionBootstrap.existingSecret | quote }}
-                  key: username
-            - name: HARBOR_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: {{ .Values.retentionBootstrap.existingSecret | quote }}
-                  key: password
-          command:
-            - /bin/sh
-            - -ec
-            - |
-              echo "Bootstrap container started"
+      - name: harbor-project-config
+        image: curlimages/curl:8.5.0
+        env:
+        - name: HARBOR_URL
+          value: {{ .Values.harbor.externalUrl | quote }}
+        - name: HARBOR_USER
+          valueFrom:
+            secretKeyRef:
+              name: harbor-admin
+              key: username
+        - name: HARBOR_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: harbor-admin
+              key: password
+        - name: PROJECT_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
 
-              until curl -skf "$HARBOR_URL/api/v2.0/health" >/dev/null; do
-                echo "Waiting for Harbor..."
-                sleep 5
-              done
+        {{- if .Values.projectQuota.enabled }}
+        - name: PROJECT_QUOTA_BYTES
+          value: "{{ .Values.projectQuota.defaultQuota }}"
+        {{- end }}
 
-              echo "Harbor is ready"
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
 
-              apply_policy() {
-                PROJECT_NAME="$1"
+          echo "Getting project ID..."
 
-                PROJECT_JSON="$(curl -skf -u "$HARBOR_USER:$HARBOR_PASSWORD" \
-                  "$HARBOR_URL/api/v2.0/projects/$PROJECT_NAME")"
+          PROJECT_ID=$(curl -sk \
+            -u "$HARBOR_USER:$HARBOR_PASSWORD" \
+            "$HARBOR_URL/api/v2.0/projects/$PROJECT_NAME" \
+            | jq -r '.project_id')
 
-                PROJECT_ID="$(echo "$PROJECT_JSON" | tr -d '\n\r' | sed -n 's/.*"project_id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
-                RETENTION_ID="$(echo "$PROJECT_JSON" | tr -d '\n\r' | sed -n 's/.*"retention_id"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
+          if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
+            echo "Project not found"
+            exit 1
+          fi
 
-                echo "Project: $PROJECT_NAME"
-                echo "Project ID: $PROJECT_ID"
-                echo "Retention ID: ${RETENTION_ID:-none}"
+          echo "Project ID: $PROJECT_ID"
 
-                POLICY_JSON='{
-                  "algorithm": "or",
-                  "scope": {
-                    "level": "project",
-                    "ref": '"$PROJECT_ID"'
-                  },
-                  "trigger": {
-                    "kind": "Schedule",
-                    "settings": {
-                      "cron": "0 0 0 * * *"
-                    }
-                  },
-                  "rules": [
+          {{- if .Values.projectQuota.enabled }}
+
+          echo "Configuring project quota..."
+
+          QUOTA_ID=$(curl -sk \
+            -u "$HARBOR_USER:$HARBOR_PASSWORD" \
+            "$HARBOR_URL/api/v2.0/quotas?reference=project&reference_id=$PROJECT_ID" \
+            | jq -r '.[0].id')
+
+          curl -sk \
+            -u "$HARBOR_USER:$HARBOR_PASSWORD" \
+            -X PUT \
+            -H "Content-Type: application/json" \
+            "$HARBOR_URL/api/v2.0/quotas/$QUOTA_ID" \
+            -d "{\"hard\":{\"storage\":${PROJECT_QUOTA_BYTES}}}"
+
+          echo "Quota configured"
+
+          {{- end }}
+
+          {{- if .Values.retention.enabled }}
+
+          echo "Configuring retention policy..."
+
+          POLICY_PAYLOAD=$(cat <<EOF
+          {
+            "algorithm":"or",
+            "rules":[
+              {
+                "action":"retain",
+                "params":{
+                  "latestPushedK":5
+                },
+                "scope_selectors":{
+                  "repository":[
                     {
-                      "template": "latestPushedK",
-                      "params": {
-                        "latestPushedK": 5
-                      },
-                      "tag_selectors": [
-                        {
-                          "kind": "doublestar",
-                          "decoration": "matches",
-                          "pattern": "**"
-                        }
-                      ],
-                      "scope_selectors": {
-                        "repository": [
-                          {
-                            "kind": "doublestar",
-                            "decoration": "repoMatches",
-                            "pattern": "**"
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "template": "nDaysSinceLastPull",
-                      "params": {
-                        "nDaysSinceLastPull": 90
-                      },
-                      "tag_selectors": [
-                        {
-                          "kind": "doublestar",
-                          "decoration": "matches",
-                          "pattern": "**"
-                        }
-                      ],
-                      "scope_selectors": {
-                        "repository": [
-                          {
-                            "kind": "doublestar",
-                            "decoration": "repoMatches",
-                            "pattern": "**"
-                          }
-                        ]
-                      }
+                      "kind":"doublestar",
+                      "decoration":"repoMatches",
+                      "pattern":"**"
                     }
                   ]
-                }'
-
-                if [ -n "$RETENTION_ID" ]; then
-                  echo "Updating retention policy $RETENTION_ID"
-                  curl -skf -u "$HARBOR_USER:$HARBOR_PASSWORD" \
-                    -H "Content-Type: application/json" \
-                    -X PUT \
-                    "$HARBOR_URL/api/v2.0/retentions/$RETENTION_ID" \
-                    -d "$POLICY_JSON"
-                else
-                  echo "Creating retention policy"
-                  curl -skf -u "$HARBOR_USER:$HARBOR_PASSWORD" \
-                    -H "Content-Type: application/json" \
-                    -X POST \
-                    "$HARBOR_URL/api/v2.0/retentions" \
-                    -d "$POLICY_JSON"
-                fi
-
-                echo "Retention configured for $PROJECT_NAME"
+                },
+                "tag_selectors":[
+                  {
+                    "kind":"doublestar",
+                    "decoration":"matches",
+                    "pattern":"**"
+                  }
+                ],
+                "template":"latestPushedK"
+              },
+              {
+                "action":"retain",
+                "params":{
+                  "nDaysSinceLastPull":90
+                },
+                "scope_selectors":{
+                  "repository":[
+                    {
+                      "kind":"doublestar",
+                      "decoration":"repoMatches",
+                      "pattern":"**"
+                    }
+                  ]
+                },
+                "tag_selectors":[
+                  {
+                    "kind":"doublestar",
+                    "decoration":"matches",
+                    "pattern":"**"
+                  }
+                ],
+                "template":"nDaysSinceLastPull"
               }
+            ]
+          }
+          EOF
+          )
 
-              {{- range .Values.retentionBootstrap.projects }}
-              apply_policy {{ .name | quote }}
-              {{- end }}
+          curl -sk \
+            -u "$HARBOR_USER:$HARBOR_PASSWORD" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            "$HARBOR_URL/api/v2.0/retentions/$PROJECT_ID" \
+            -d "$POLICY_PAYLOAD"
+
+          echo "Retention configured"
+
+          {{- end }}
 {{- end }}
