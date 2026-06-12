@@ -1,0 +1,19 @@
+oauthProxy:
+  enabled: true
+
+  image:
+    repository: registry.redhat.io/openshift4/ose-oauth-proxy-rhel9
+    tag: "v4.15"
+    pullPolicy: IfNotPresent
+
+  port: 4180
+
+  # Generate once and keep it fixed for GitOps/ArgoCD.
+  # Example:
+  # openssl rand -hex 16
+  cookieSecret: "CHANGE_ME_TO_FIXED_32_CHAR_SECRET"
+
+  # Start with false for first test.
+  # If enabled, the logged-in OpenShift user must have get permission on the Grafana Service.
+  authorization:
+    enabled: false
