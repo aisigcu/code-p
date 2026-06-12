@@ -1,0 +1,17 @@
+{{- if and .Values.grafana.enabled .Values.oauthProxy.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "monitoring-grafana.fullname" . }}-oauth-proxy
+  namespace: {{ include "monitoring-grafana.namespace" . }}
+  labels:
+    {{- include "monitoring-grafana.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:auth-delegator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "monitoring-grafana.serviceAccountName" . }}
+    namespace: {{ include "monitoring-grafana.namespace" . }}
+{{- end }}
