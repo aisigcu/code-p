@@ -1,4 +1,4 @@
-{{- if or .Values.retention.enabled .Values.projectQuota.enabled }}
+{{- if or (dig "retention" "enabled" false .Values) (dig "projectQuota" "enabled" false .Values) }}
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -11,138 +11,149 @@ spec:
     spec:
       restartPolicy: Never
       containers:
-      - name: harbor-project-config
-        image: curlimages/curl:8.5.0
-        env:
-        - name: HARBOR_URL
-          value: {{ .Values.harbor.externalUrl | quote }}
-        - name: HARBOR_USER
-          valueFrom:
-            secretKeyRef:
-              name: harbor-admin
-              key: username
-        - name: HARBOR_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: harbor-admin
-              key: password
-        - name: PROJECT_NAME
-          valueFrom:
-            fieldRef:
-              fieldPath: metadata.namespace
+        - name: harbor-project-config
+          image: registry.access.redhat.com/ubi9/ubi:latest
+          env:
+            - name: HARBOR_URL
+              value: {{ .Values.harbor.externalUrl | quote }}
+            - name: HARBOR_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret | quote }}
+                  key: username
+            - name: HARBOR_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.existingSecret | quote }}
+                  key: password
+            - name: PROJECT_QUOTA_BYTES
+              value: {{ dig "projectQuota" "defaultQuota" 10995116277760 .Values | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              set -eu
 
-        {{- if .Values.projectQuota.enabled }}
-        - name: PROJECT_QUOTA_BYTES
-          value: "{{ .Values.projectQuota.defaultQuota }}"
-        {{- end }}
+              {{- range .Values.projects }}
 
-        command:
-        - /bin/sh
-        - -c
-        - |
-          set -e
+              PROJECT_NAME="{{ .name }}"
+              echo "Configuring Harbor project: ${PROJECT_NAME}"
 
-          echo "Getting project ID..."
+              PROJECT_JSON=$(curl -sk -u "${HARBOR_USER}:${HARBOR_PASSWORD}" \
+                "${HARBOR_URL}/api/v2.0/projects/${PROJECT_NAME}")
 
-          PROJECT_ID=$(curl -sk \
-            -u "$HARBOR_USER:$HARBOR_PASSWORD" \
-            "$HARBOR_URL/api/v2.0/projects/$PROJECT_NAME" \
-            | jq -r '.project_id')
+              PROJECT_ID=$(echo "${PROJECT_JSON}" | sed -n 's/.*"project_id":[ ]*\([0-9][0-9]*\).*/\1/p')
 
-          if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
-            echo "Project not found"
-            exit 1
-          fi
+              if [ -z "${PROJECT_ID}" ]; then
+                echo "ERROR: Could not find project_id for project ${PROJECT_NAME}"
+                echo "${PROJECT_JSON}"
+                exit 1
+              fi
 
-          echo "Project ID: $PROJECT_ID"
+              echo "Project ID for ${PROJECT_NAME}: ${PROJECT_ID}"
 
-          {{- if .Values.projectQuota.enabled }}
+              {{- if (dig "projectQuota" "enabled" false $.Values) }}
 
-          echo "Configuring project quota..."
+              echo "Configuring quota for ${PROJECT_NAME}: ${PROJECT_QUOTA_BYTES} bytes"
 
-          QUOTA_ID=$(curl -sk \
-            -u "$HARBOR_USER:$HARBOR_PASSWORD" \
-            "$HARBOR_URL/api/v2.0/quotas?reference=project&reference_id=$PROJECT_ID" \
-            | jq -r '.[0].id')
+              QUOTA_JSON=$(curl -sk -u "${HARBOR_USER}:${HARBOR_PASSWORD}" \
+                "${HARBOR_URL}/api/v2.0/quotas?reference=project&reference_id=${PROJECT_ID}")
 
-          curl -sk \
-            -u "$HARBOR_USER:$HARBOR_PASSWORD" \
-            -X PUT \
-            -H "Content-Type: application/json" \
-            "$HARBOR_URL/api/v2.0/quotas/$QUOTA_ID" \
-            -d "{\"hard\":{\"storage\":${PROJECT_QUOTA_BYTES}}}"
+              QUOTA_ID=$(echo "${QUOTA_JSON}" | sed -n 's/.*"id":[ ]*\([0-9][0-9]*\).*/\1/p')
 
-          echo "Quota configured"
+              if [ -z "${QUOTA_ID}" ]; then
+                echo "ERROR: Could not find quota_id for project ${PROJECT_NAME}"
+                echo "${QUOTA_JSON}"
+                exit 1
+              fi
 
-          {{- end }}
+              curl -sk -u "${HARBOR_USER}:${HARBOR_PASSWORD}" \
+                -X PUT \
+                -H "Content-Type: application/json" \
+                "${HARBOR_URL}/api/v2.0/quotas/${QUOTA_ID}" \
+                -d "{\"hard\":{\"storage\":${PROJECT_QUOTA_BYTES}}}"
 
-          {{- if .Values.retention.enabled }}
+              echo "Quota configured for ${PROJECT_NAME}"
 
-          echo "Configuring retention policy..."
+              {{- end }}
 
-          POLICY_PAYLOAD=$(cat <<EOF
-          {
-            "algorithm":"or",
-            "rules":[
-              {
-                "action":"retain",
-                "params":{
-                  "latestPushedK":5
-                },
-                "scope_selectors":{
-                  "repository":[
-                    {
-                      "kind":"doublestar",
-                      "decoration":"repoMatches",
-                      "pattern":"**"
-                    }
-                  ]
-                },
-                "tag_selectors":[
+              {{- if (dig "retention" "enabled" false $.Values) }}
+
+              echo "Configuring retention for ${PROJECT_NAME}"
+
+              RETENTION_PAYLOAD='{
+                "algorithm": "or",
+                "rules": [
                   {
-                    "kind":"doublestar",
-                    "decoration":"matches",
-                    "pattern":"**"
+                    "disabled": false,
+                    "action": "retain",
+                    "template": "latestPushedK",
+                    "params": {
+                      "latestPushedK": {{ .keepLatestPushed | default 5 }}
+                    },
+                    "scope_selectors": {
+                      "repository": [
+                        {
+                          "kind": "doublestar",
+                          "decoration": "repoMatches",
+                          "pattern": "{{ .repoPattern | default "**" }}"
+                        }
+                      ]
+                    },
+                    "tag_selectors": [
+                      {
+                        "kind": "doublestar",
+                        "decoration": "matches",
+                        "pattern": "{{ .tagPattern | default "**" }}"
+                      }
+                    ]
+                  },
+                  {
+                    "disabled": false,
+                    "action": "retain",
+                    "template": "nDaysSinceLastPull",
+                    "params": {
+                      "nDaysSinceLastPull": {{ .keepPulledWithinDays | default 90 }}
+                    },
+                    "scope_selectors": {
+                      "repository": [
+                        {
+                          "kind": "doublestar",
+                          "decoration": "repoMatches",
+                          "pattern": "{{ .repoPattern | default "**" }}"
+                        }
+                      ]
+                    },
+                    "tag_selectors": [
+                      {
+                        "kind": "doublestar",
+                        "decoration": "matches",
+                        "pattern": "{{ .tagPattern | default "**" }}"
+                      }
+                    ]
                   }
                 ],
-                "template":"latestPushedK"
-              },
-              {
-                "action":"retain",
-                "params":{
-                  "nDaysSinceLastPull":90
+                "scope": {
+                  "level": "project",
+                  "ref": '"${PROJECT_ID}"'
                 },
-                "scope_selectors":{
-                  "repository":[
-                    {
-                      "kind":"doublestar",
-                      "decoration":"repoMatches",
-                      "pattern":"**"
-                    }
-                  ]
-                },
-                "tag_selectors":[
-                  {
-                    "kind":"doublestar",
-                    "decoration":"matches",
-                    "pattern":"**"
+                "trigger": {
+                  "kind": "Schedule",
+                  "settings": {
+                    "cron": "{{ .scheduleCron | default "0 0 0 * * *" }}"
                   }
-                ],
-                "template":"nDaysSinceLastPull"
-              }
-            ]
-          }
-          EOF
-          )
+                }
+              }'
 
-          curl -sk \
-            -u "$HARBOR_USER:$HARBOR_PASSWORD" \
-            -X POST \
-            -H "Content-Type: application/json" \
-            "$HARBOR_URL/api/v2.0/retentions/$PROJECT_ID" \
-            -d "$POLICY_PAYLOAD"
+              curl -sk -u "${HARBOR_USER}:${HARBOR_PASSWORD}" \
+                -X POST \
+                -H "Content-Type: application/json" \
+                "${HARBOR_URL}/api/v2.0/retentions" \
+                -d "${RETENTION_PAYLOAD}"
 
-          echo "Retention configured"
+              echo "Retention configured for ${PROJECT_NAME}"
 
-          {{- end }}
+              {{- end }}
+
+              {{- end }}
 {{- end }}
