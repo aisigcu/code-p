@@ -1,0 +1,25 @@
+{{- if .Values.oauthProxy.enabled }}
+- name: oauth-proxy
+  image: "{{ .Values.oauthProxy.image.repository }}:{{ .Values.oauthProxy.image.tag }}"
+  imagePullPolicy: {{ .Values.oauthProxy.image.pullPolicy }}
+  ports:
+    - name: oauth-proxy
+      containerPort: {{ .Values.oauthProxy.port }}
+      protocol: TCP
+  args:
+    - --provider=openshift
+    - --http-address=http://:{{ .Values.oauthProxy.port }}
+    - --https-address=
+    - --email-domain=*
+    - --upstream=http://localhost:3000
+    - --openshift-service-account={{ include "monitoring-grafana.serviceAccountName" . }}
+    - --cookie-secret-file=/etc/proxy/secrets/session_secret
+    - --pass-user-headers=true
+    {{- if .Values.oauthProxy.authorization.enabled }}
+    - '--openshift-sar={"namespace":"{{ include "monitoring-grafana.namespace" . }}","resource":"services","resourceName":"{{ include "monitoring-grafana.fullname" . }}","verb":"get"}'
+    {{- end }}
+  volumeMounts:
+    - name: oauth-proxy-secret
+      mountPath: /etc/proxy/secrets
+      readOnly: true
+{{- end }}
