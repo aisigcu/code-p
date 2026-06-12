@@ -1,0 +1,22 @@
+{{- if .Values.grafana.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "monitoring-grafana.fullname" . }}
+  namespace: {{ include "monitoring-grafana.namespace" . }}
+  labels:
+    {{- include "monitoring-grafana.labels" . | nindent 4 }}
+  {{- with .Values.grafana.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.grafana.service.type }}
+  ports:
+    - port: {{ .Values.grafana.service.port }}
+      targetPort: {{ ternary "oauth-proxy" "http" .Values.oauthProxy.enabled }}
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "monitoring-grafana.selectorLabels" . | nindent 4 }}
+{{- end }}
