@@ -1,0 +1,12 @@
+grafana:
+  config:
+    auth:
+      disable_login_form: true
+      disable_signout_menu: true
+
+    auth.proxy:
+      enabled: true
+      header_name: X-Forwarded-User
+      header_property: username
+      auto_sign_up: true
+      headers: Email:X-Forwarded-Email Name:X-Forwarded-User
