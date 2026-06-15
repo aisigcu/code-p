@@ -1,5 +1,0 @@
-{{- if .Values.oauthProxy.enabled }}
-- name: oauth-proxy-secret
-  secret:
-    secretName: {{ include "monitoring-grafana.fullname" . }}-oauth-proxy
-{{- end }}

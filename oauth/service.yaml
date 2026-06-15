@@ -1,5 +1,0 @@
-ports:
-  - port: {{ .Values.grafana.service.port }}
-    targetPort: {{ ternary "oauth-proxy" "http" .Values.oauthProxy.enabled }}
-    protocol: TCP
-    name: http
