@@ -1,0 +1,42 @@
+{{- if and .Values.grafana.enabled .Values.grafana.accessGroups.enabled }}
+apiVersion: user.openshift.io/v1
+kind: Group
+metadata:
+  name: {{ .Values.grafana.accessGroups.admin.name | quote }}
+  labels:
+    {{- include "monitoring-grafana.labels" . | nindent 4 }}
+users:
+  {{- range .Values.grafana.accessGroups.admin.users }}
+  - {{ . | quote }}
+  {{- end }}
+---
+apiVersion: user.openshift.io/v1
+kind: Group
+metadata:
+  name: {{ .Values.grafana.accessGroups.viewer.name | quote }}
+  labels:
+    {{- include "monitoring-grafana.labels" . | nindent 4 }}
+users:
+  {{- range .Values.grafana.accessGroups.viewer.users }}
+  - {{ . | quote }}
+  {{- end }}
+{{- end }}
+
+
+role_attribute_path: >-
+  contains(groups[*], '{{ .Values.grafana.accessGroups.admin.name }}') && 'Admin' ||
+  contains(groups[*], '{{ .Values.grafana.accessGroups.viewer.name }}') && 'Viewer'
+
+
+grafana:
+  accessGroups:
+    enabled: true
+
+    admin:
+      name: grafana-admin
+      users:
+        - kube:admin
+
+    viewer:
+      name: grafana-viewer
+      users: []
