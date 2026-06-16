@@ -1,0 +1,39 @@
+grafana:
+  oauthClient:
+    enabled: true
+    clientId: grafana-monitoring-grafana
+    clientSecret: "CHANGE_ME_FIXED_RANDOM_SECRET"
+
+  config:
+    server:
+      root_url: https://monitoring-grafana-devops.apps.oitppocp02nyf.us.ocp.oit-ops.com
+
+    auth:
+      disable_login_form: true
+      disable_signout_menu: true
+
+    auth.generic_oauth:
+      enabled: true
+      name: OpenShift
+      allow_sign_up: true
+
+      client_id: grafana-monitoring-grafana
+      client_secret: CHANGE_ME_FIXED_RANDOM_SECRET
+
+      scopes: user:info user:check-access
+      auth_url: https://oauth-openshift.apps.oitppocp02nyf.us.ocp.oit-ops.com/oauth/authorize
+      token_url: https://oauth-openshift.apps.oitppocp02nyf.us.ocp.oit-ops.com/oauth/token
+      api_url: https://api.oitppocp02nyf.us.ocp.oit-ops.com:6443/apis/user.openshift.io/v1/users/~
+
+      login_attribute_path: metadata.name
+      name_attribute_path: metadata.name
+
+      role_attribute_path: contains(groups[*], 'tenant-a-admins') && 'Admin' || contains(groups[*], 'tenant-a-viewers') && 'Viewer'
+      role_attribute_strict: true
+      allow_assign_grafana_admin: true
+
+      tls_skip_verify_insecure: true
+
+    users:
+      auto_assign_org: true
+      auto_assign_org_role: Viewer
