@@ -1,0 +1,12 @@
+{{- if and .Values.grafana.enabled .Values.grafana.oauthClient.enabled }}
+apiVersion: oauth.openshift.io/v1
+kind: OAuthClient
+metadata:
+  name: {{ .Values.grafana.oauthClient.clientId | quote }}
+  labels:
+    {{- include "monitoring-grafana.labels" . | nindent 4 }}
+secret: {{ .Values.grafana.oauthClient.clientSecret | quote }}
+redirectURIs:
+  - "https://{{ .Values.ingress.host }}/login/generic_oauth"
+grantMethod: prompt
+{{- end }}
