@@ -28,8 +28,7 @@ grafana:
       login_attribute_path: metadata.name
       name_attribute_path: metadata.name
 
-      role_attribute_path: contains(groups[*], 'tenant-a-admins') && 'Admin' || contains(groups[*], 'tenant-a-viewers') && 'Viewer'
-      role_attribute_strict: true
+      role_attribute_path: contains(groups[*], 'tenant-a-admins') && 'Admin' || contains(groups[*], 'tenant-a-developers') && 'Viewer' || contains(groups[*], 'tenant-a-viewers') && 'Viewer'      role_attribute_strict: true
       allow_assign_grafana_admin: true
 
       tls_skip_verify_insecure: true
