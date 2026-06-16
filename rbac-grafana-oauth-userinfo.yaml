@@ -1,0 +1,32 @@
+{{- if and .Values.grafana.enabled .Values.grafana.oauthClient.enabled }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "monitoring-grafana.fullname" . }}-oauth-userinfo
+  labels:
+    {{- include "monitoring-grafana.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - user.openshift.io
+    resources:
+      - users
+      - groups
+    verbs:
+      - get
+      - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "monitoring-grafana.fullname" . }}-oauth-userinfo
+  labels:
+    {{- include "monitoring-grafana.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "monitoring-grafana.fullname" . }}-oauth-userinfo
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "monitoring-grafana.serviceAccountName" . }}
+    namespace: {{ include "monitoring-grafana.namespace" . }}
+{{- end }}
