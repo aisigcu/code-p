@@ -1,0 +1,25 @@
+{{- if .Values.grafana.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "monitoring-grafana.fullname" . }}-config
+  namespace: {{ include "monitoring-grafana.namespace" . }}
+  labels:
+    {{- include "monitoring-grafana.labels" . | nindent 4 }}
+
+data:
+  grafana.ini: |
+    {{- range $section, $values := .Values.grafana.config }}
+    [{{ $section }}]
+    {{- range $key, $value := $values }}
+
+    {{- if and (eq $section "auth.generic_oauth") (eq $key "role_attribute_path") }}
+    role_attribute_path = contains(groups[*], '{{ $.Values.grafana.accessGroups.admin.name }}') && 'Admin' || contains(groups[*], '{{ $.Values.grafana.accessGroups.viewer.name }}') && 'Viewer'
+    {{- else }}
+    {{ $key }} = {{ $value }}
+    {{- end }}
+
+    {{- end }}
+    {{- end }}
+
+{{- end }}
