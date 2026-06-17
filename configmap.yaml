@@ -14,12 +14,11 @@ data:
     {{- range $key, $value := $values }}
 
     {{- if and (eq $section "auth.generic_oauth") (eq $key "role_attribute_path") }}
-    role_attribute_path = contains(groups[*], '{{ $.Values.grafana.accessGroups.admin.name }}') && 'Admin' || contains(groups[*], '{{ $.Values.grafana.accessGroups.viewer.name }}') && 'Viewer'
+    role_attribute_path = {{- range $.Values.grafana.accessGroups.admin.users }} metadata.name == '{{ . }}' && 'Admin' ||{{- end }}{{- range $.Values.grafana.accessGroups.viewer.users }} metadata.name == '{{ . }}' && 'Viewer' ||{{- end }} 'None'
     {{- else }}
     {{ $key }} = {{ $value }}
     {{- end }}
 
     {{- end }}
     {{- end }}
-
 {{- end }}
